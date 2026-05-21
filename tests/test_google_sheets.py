@@ -31,8 +31,29 @@ from app.services.google_sheets import (
     SheetsServiceError,
     _load_oauth_credentials,
     _parse_row_index,
+    _BLACK_BORDER,
+    _BLACK_COLOR,
+    _COL_APPOINTMENT,
+    _COL_CAR_BODY,
+    _COL_CAR_YEAR,
+    _COL_CALL_TYPE,
+    _COL_DATE,
+    _COL_DIAGNOSTICS,
+    _COL_GOODBYE,
+    _COL_GREETING,
+    _COL_IS_OK,
+    _COL_MILEAGE,
+    _COL_PHONE,
+    _COL_PREV_WORKS,
     _COL_RED_FLAG,
+    _COL_RESULT,
+    _COL_SCORE,
+    _COL_SPARE_PARTS,
+    _COL_WORK_TYPE,
+    _DEFAULT_FG,
+    _ROW_WIDTH,
     _SCOPES,
+    _WHITE_BG,
 )
 
 # ---------------------------------------------------------------------------
@@ -47,20 +68,40 @@ DATE_STR = "2026-05-20"
 
 _OK_ANALYSIS = CallAnalysis(
     has_recording=True,
-    work_type="Заміна масла",
+    work_type="Заміна Оливи ДВЗ",
     manager_evaluation="Менеджер відповів чітко та ввічливо.",
     is_call_ok=True,
     red_flag_comment=None,
     score=1,
+    greeting_start=1,
+    asked_car_body=1,
+    asked_car_year=1,
+    asked_mileage=0,
+    offered_diagnostics=1,
+    asked_previous_works=1,
+    appointment_date="Вівторок о 10:00",
+    goodbye_end=1,
+    result="Запис",
+    spare_parts="Наші",
 )
 
 _BAD_ANALYSIS = CallAnalysis(
     has_recording=True,
-    work_type="Комп'ютерна діагностика",
+    work_type="Компʼютерна діагностика",
     manager_evaluation="Менеджер не надав ціну.",
     is_call_ok=False,
     red_flag_comment="Менеджер не відповів на питання про вартість послуги.",
     score=0,
+    greeting_start=1,
+    asked_car_body=0,
+    asked_car_year=0,
+    asked_mileage=0,
+    offered_diagnostics=0,
+    asked_previous_works=0,
+    appointment_date="0",
+    goodbye_end=1,
+    result="Інше",
+    spare_parts="Наші",
 )
 
 
@@ -389,6 +430,223 @@ class TestFormatCellRed:
         with pytest.raises(SheetsServiceError):
             sheets_service.format_cell_red(SPREADSHEET_ID, SHEET_ID, 0, 0)
 
+    def test_batch_contains_update_borders_request(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        """batchUpdate must include an updateBorders request alongside repeatCell."""
+        sheets_service.format_cell_red(SPREADSHEET_ID, SHEET_ID, row_index=4, column_index=5)
+
+        body = mock_sheets.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]
+        assert len(body["requests"]) == 2
+        assert "updateBorders" in body["requests"][1]
+
+    def test_borders_cover_full_row_width(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        """Border range must span all _ROW_WIDTH columns for the given row."""
+        sheets_service.format_cell_red(SPREADSHEET_ID, SHEET_ID, row_index=4, column_index=5)
+
+        body = mock_sheets.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]
+        border_range = body["requests"][1]["updateBorders"]["range"]
+
+        assert border_range["sheetId"] == SHEET_ID
+        assert border_range["startRowIndex"] == 4
+        assert border_range["endRowIndex"] == 5
+        assert border_range["startColumnIndex"] == 0
+        assert border_range["endColumnIndex"] == _ROW_WIDTH
+
+    def test_borders_are_solid_black(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        """Every border side must be SOLID with a black colour."""
+        sheets_service.format_cell_red(SPREADSHEET_ID, SHEET_ID, row_index=0, column_index=0)
+
+        body = mock_sheets.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]
+        borders = body["requests"][1]["updateBorders"]
+
+        for side in ("top", "bottom", "left", "right", "innerVertical"):
+            assert borders[side] == _BLACK_BORDER, f"Border side '{side}' mismatch"
+            assert borders[side]["style"] == "SOLID"
+            assert borders[side]["color"] == _BLACK_COLOR
+
+
+# ---------------------------------------------------------------------------
+# format_cell_clear
+# ---------------------------------------------------------------------------
+
+
+class TestFormatCellClear:
+    def test_calls_batch_update_once(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        sheets_service.format_cell_clear(
+            SPREADSHEET_ID, SHEET_ID, row_index=4, column_index=19
+        )
+
+        mock_sheets.spreadsheets.return_value.batchUpdate.assert_called_once()
+
+    def test_passes_correct_spreadsheet_id(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        sheets_service.format_cell_clear(
+            SPREADSHEET_ID, SHEET_ID, row_index=4, column_index=19
+        )
+
+        kwargs = mock_sheets.spreadsheets.return_value.batchUpdate.call_args.kwargs
+        assert kwargs["spreadsheetId"] == SPREADSHEET_ID
+
+    def test_repeatCell_range_matches_row_and_column(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        sheets_service.format_cell_clear(
+            SPREADSHEET_ID, SHEET_ID, row_index=4, column_index=19
+        )
+
+        body = mock_sheets.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]
+        cell_range = body["requests"][0]["repeatCell"]["range"]
+
+        assert cell_range["sheetId"] == SHEET_ID
+        assert cell_range["startRowIndex"] == 4
+        assert cell_range["endRowIndex"] == 5
+        assert cell_range["startColumnIndex"] == 19
+        assert cell_range["endColumnIndex"] == 20
+
+    def test_background_color_is_white(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        sheets_service.format_cell_clear(
+            SPREADSHEET_ID, SHEET_ID, row_index=0, column_index=0
+        )
+
+        body = mock_sheets.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]
+        fmt = body["requests"][0]["repeatCell"]["cell"]["userEnteredFormat"]
+
+        assert fmt["backgroundColor"] == _WHITE_BG
+        assert fmt["backgroundColor"]["red"] == 1.0
+        assert fmt["backgroundColor"]["green"] == 1.0
+        assert fmt["backgroundColor"]["blue"] == 1.0
+
+    def test_text_is_not_bold_and_black(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        sheets_service.format_cell_clear(
+            SPREADSHEET_ID, SHEET_ID, row_index=0, column_index=0
+        )
+
+        body = mock_sheets.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]
+        text_fmt = body["requests"][0]["repeatCell"]["cell"]["userEnteredFormat"]["textFormat"]
+
+        assert text_fmt["bold"] is False
+        assert text_fmt["foregroundColor"] == _DEFAULT_FG
+        assert text_fmt["foregroundColor"]["red"] == 0.0
+        assert text_fmt["foregroundColor"]["green"] == 0.0
+        assert text_fmt["foregroundColor"]["blue"] == 0.0
+
+    def test_raises_sheets_service_error_on_http_error(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        (
+            mock_sheets.spreadsheets.return_value.batchUpdate.return_value
+            .execute.side_effect
+        ) = _http_error(403)
+
+        with pytest.raises(SheetsServiceError):
+            sheets_service.format_cell_clear(SPREADSHEET_ID, SHEET_ID, 0, 0)
+
+    def test_request_body_is_isolated_per_call(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        """Each call must build a fresh body dict — no shared mutable state."""
+        sheets_service.format_cell_clear(
+            SPREADSHEET_ID, SHEET_ID, row_index=2, column_index=19
+        )
+        sheets_service.format_cell_clear(
+            SPREADSHEET_ID, SHEET_ID, row_index=5, column_index=19
+        )
+
+        calls = mock_sheets.spreadsheets.return_value.batchUpdate.call_args_list
+        assert len(calls) == 2
+
+        row_first = calls[0].kwargs["body"]["requests"][0]["repeatCell"]["range"][
+            "startRowIndex"
+        ]
+        row_second = calls[1].kwargs["body"]["requests"][0]["repeatCell"]["range"][
+            "startRowIndex"
+        ]
+        assert row_first == 2
+        assert row_second == 5
+
+    def test_batch_contains_update_borders_request(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        """batchUpdate must include an updateBorders request alongside repeatCell."""
+        sheets_service.format_cell_clear(
+            SPREADSHEET_ID, SHEET_ID, row_index=4, column_index=19
+        )
+
+        body = mock_sheets.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]
+        assert len(body["requests"]) == 2
+        assert "updateBorders" in body["requests"][1]
+
+    def test_borders_cover_full_row_width(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        """Border range must span all _ROW_WIDTH columns for the given row."""
+        sheets_service.format_cell_clear(
+            SPREADSHEET_ID, SHEET_ID, row_index=4, column_index=19
+        )
+
+        body = mock_sheets.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]
+        border_range = body["requests"][1]["updateBorders"]["range"]
+
+        assert border_range["sheetId"] == SHEET_ID
+        assert border_range["startRowIndex"] == 4
+        assert border_range["endRowIndex"] == 5
+        assert border_range["startColumnIndex"] == 0
+        assert border_range["endColumnIndex"] == _ROW_WIDTH
+
+    def test_borders_are_solid_black(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        """Every border side must be SOLID with a black colour."""
+        sheets_service.format_cell_clear(
+            SPREADSHEET_ID, SHEET_ID, row_index=0, column_index=0
+        )
+
+        body = mock_sheets.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]
+        borders = body["requests"][1]["updateBorders"]
+
+        for side in ("top", "bottom", "left", "right", "innerVertical"):
+            assert borders[side] == _BLACK_BORDER, f"Border side '{side}' mismatch"
+            assert borders[side]["style"] == "SOLID"
+            assert borders[side]["color"] == _BLACK_COLOR
+
 
 # ---------------------------------------------------------------------------
 # append_analysis_result
@@ -404,26 +662,36 @@ def _configure_append_response(mock_sheets: MagicMock, updated_range: str) -> No
 
 
 class TestAppendAnalysisResult:
-    def test_ok_call_appends_row_without_formatting(
+    def test_ok_call_appends_row_and_clears_comment_cell(
         self,
         sheets_service: GoogleSheetsService,
         mock_sheets: MagicMock,
     ) -> None:
-        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A5:G5")
+        """Good calls must trigger format_cell_clear — never skip the batchUpdate.
+
+        Skipping it would let the new row inherit red from a preceding bad-call
+        row because Google Sheets copies formatting when INSERT_ROWS is used.
+        """
+        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A5:T5")
 
         sheets_service.append_analysis_result(
             SPREADSHEET_ID, SHEET_NAME, SHEET_ID, DATE_STR, _OK_ANALYSIS
         )
 
         mock_sheets.spreadsheets.return_value.values.return_value.append.assert_called_once()
-        mock_sheets.spreadsheets.return_value.batchUpdate.assert_not_called()
+        mock_sheets.spreadsheets.return_value.batchUpdate.assert_called_once()
+
+        body = mock_sheets.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]
+        fmt = body["requests"][0]["repeatCell"]["cell"]["userEnteredFormat"]
+        assert fmt["backgroundColor"] == _WHITE_BG
+        assert fmt["textFormat"]["bold"] is False
 
     def test_bad_call_appends_row_and_formats_red(
         self,
         sheets_service: GoogleSheetsService,
         mock_sheets: MagicMock,
     ) -> None:
-        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A7:G7")
+        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A7:T7")
 
         sheets_service.append_analysis_result(
             SPREADSHEET_ID, SHEET_NAME, SHEET_ID, DATE_STR, _BAD_ANALYSIS
@@ -438,7 +706,7 @@ class TestAppendAnalysisResult:
         mock_sheets: MagicMock,
     ) -> None:
         # Row 7 in A1 notation → row_index 6 (0-based)
-        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A7:G7")
+        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A7:T7")
 
         sheets_service.append_analysis_result(
             SPREADSHEET_ID, SHEET_NAME, SHEET_ID, DATE_STR, _BAD_ANALYSIS
@@ -454,7 +722,7 @@ class TestAppendAnalysisResult:
         sheets_service: GoogleSheetsService,
         mock_sheets: MagicMock,
     ) -> None:
-        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A3:G3")
+        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A3:T3")
 
         sheets_service.append_analysis_result(
             SPREADSHEET_ID, SHEET_NAME, SHEET_ID, DATE_STR, _BAD_ANALYSIS
@@ -465,12 +733,12 @@ class TestAppendAnalysisResult:
         assert cell_range["startColumnIndex"] == _COL_RED_FLAG
         assert cell_range["endColumnIndex"] == _COL_RED_FLAG + 1
 
-    def test_row_contains_date_as_first_element(
+    def test_row_has_correct_width(
         self,
         sheets_service: GoogleSheetsService,
         mock_sheets: MagicMock,
     ) -> None:
-        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A2:G2")
+        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A2:T2")
 
         sheets_service.append_analysis_result(
             SPREADSHEET_ID, SHEET_NAME, SHEET_ID, DATE_STR, _OK_ANALYSIS
@@ -480,14 +748,14 @@ class TestAppendAnalysisResult:
             mock_sheets.spreadsheets.return_value.values.return_value.append.call_args.kwargs
         )
         row = kwargs["body"]["values"][0]
-        assert row[0] == DATE_STR
+        assert len(row) == _ROW_WIDTH
 
-    def test_row_contains_all_analysis_fields(
+    def test_row_maps_date_to_col_date(
         self,
         sheets_service: GoogleSheetsService,
         mock_sheets: MagicMock,
     ) -> None:
-        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A2:G2")
+        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A2:T2")
 
         sheets_service.append_analysis_result(
             SPREADSHEET_ID, SHEET_NAME, SHEET_ID, DATE_STR, _OK_ANALYSIS
@@ -497,11 +765,193 @@ class TestAppendAnalysisResult:
             mock_sheets.spreadsheets.return_value.values.return_value.append.call_args.kwargs
         )
         row = kwargs["body"]["values"][0]
-        assert row[1] == _OK_ANALYSIS.has_recording
-        assert row[2] == _OK_ANALYSIS.work_type
-        assert row[3] == _OK_ANALYSIS.manager_evaluation
-        assert row[4] == _OK_ANALYSIS.is_call_ok
-        assert row[6] == _OK_ANALYSIS.score
+        assert row[_COL_DATE] == DATE_STR
+
+    def test_row_maps_call_type_and_phone_to_correct_columns(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A2:T2")
+
+        sheets_service.append_analysis_result(
+            SPREADSHEET_ID,
+            SHEET_NAME,
+            SHEET_ID,
+            DATE_STR,
+            _OK_ANALYSIS,
+            call_type="Вхідний",
+            phone_number="380671234567",
+        )
+
+        kwargs = (
+            mock_sheets.spreadsheets.return_value.values.return_value.append.call_args.kwargs
+        )
+        row = kwargs["body"]["values"][0]
+        assert row[_COL_CALL_TYPE] == "Вхідний"
+        assert row[_COL_PHONE] == "380671234567"
+
+    def test_row_maps_analysis_fields_to_template_columns(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A2:T2")
+
+        sheets_service.append_analysis_result(
+            SPREADSHEET_ID, SHEET_NAME, SHEET_ID, DATE_STR, _OK_ANALYSIS
+        )
+
+        kwargs = (
+            mock_sheets.spreadsheets.return_value.values.return_value.append.call_args.kwargs
+        )
+        row = kwargs["body"]["values"][0]
+        assert row[_COL_WORK_TYPE] == _OK_ANALYSIS.work_type
+        assert row[_COL_SCORE] == _OK_ANALYSIS.score
+        assert row[_COL_RED_FLAG] == ""   # no comment for an OK call
+
+    def test_row_maps_checklist_fields_to_template_columns(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        """All 10 newly-extracted fields land in their exact template indices."""
+        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A2:T2")
+
+        sheets_service.append_analysis_result(
+            SPREADSHEET_ID, SHEET_NAME, SHEET_ID, DATE_STR, _OK_ANALYSIS
+        )
+
+        kwargs = (
+            mock_sheets.spreadsheets.return_value.values.return_value.append.call_args.kwargs
+        )
+        row = kwargs["body"]["values"][0]
+
+        assert row[_COL_GREETING] == _OK_ANALYSIS.greeting_start
+        assert row[_COL_CAR_BODY] == _OK_ANALYSIS.asked_car_body
+        assert row[_COL_CAR_YEAR] == _OK_ANALYSIS.asked_car_year
+        assert row[_COL_MILEAGE] == _OK_ANALYSIS.asked_mileage
+        assert row[_COL_DIAGNOSTICS] == _OK_ANALYSIS.offered_diagnostics
+        assert row[_COL_PREV_WORKS] == _OK_ANALYSIS.asked_previous_works
+        assert row[_COL_APPOINTMENT] == _OK_ANALYSIS.appointment_date
+        assert row[_COL_GOODBYE] == _OK_ANALYSIS.goodbye_end
+        assert row[_COL_RESULT] == _OK_ANALYSIS.result
+        assert row[_COL_SPARE_PARTS] == _OK_ANALYSIS.spare_parts
+
+    def test_row_maps_absent_text_fields_correctly(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        """Absent-value fields land with their canonical placeholders (never None).
+
+        - appointment_date with no appointment → '0' (Google Sheets validation rule)
+        - result → valid Literal value from the enum
+        - spare_parts with no parts discussed → ''
+        """
+        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A4:T4")
+
+        sheets_service.append_analysis_result(
+            SPREADSHEET_ID, SHEET_NAME, SHEET_ID, DATE_STR, _BAD_ANALYSIS
+        )
+
+        kwargs = (
+            mock_sheets.spreadsheets.return_value.values.return_value.append.call_args.kwargs
+        )
+        row = kwargs["body"]["values"][0]
+
+        assert row[_COL_APPOINTMENT] == "0"
+        assert row[_COL_RESULT] == _BAD_ANALYSIS.result
+        assert row[_COL_SPARE_PARTS] == "Наші"
+
+    def test_row_maps_red_flag_comment_to_comment_column(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A5:T5")
+
+        sheets_service.append_analysis_result(
+            SPREADSHEET_ID, SHEET_NAME, SHEET_ID, DATE_STR, _BAD_ANALYSIS
+        )
+
+        kwargs = (
+            mock_sheets.spreadsheets.return_value.values.return_value.append.call_args.kwargs
+        )
+        row = kwargs["body"]["values"][0]
+        assert row[_COL_RED_FLAG] == _BAD_ANALYSIS.red_flag_comment
+
+    def test_row_maps_is_call_ok_to_col_is_ok(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A2:T2")
+
+        sheets_service.append_analysis_result(
+            SPREADSHEET_ID, SHEET_NAME, SHEET_ID, DATE_STR, _OK_ANALYSIS
+        )
+
+        kwargs = (
+            mock_sheets.spreadsheets.return_value.values.return_value.append.call_args.kwargs
+        )
+        row = kwargs["body"]["values"][0]
+        assert row[_COL_IS_OK] == int(_OK_ANALYSIS.is_call_ok)  # 1
+
+    def test_row_maps_bad_is_call_ok_as_zero(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A4:T4")
+
+        sheets_service.append_analysis_result(
+            SPREADSHEET_ID, SHEET_NAME, SHEET_ID, DATE_STR, _BAD_ANALYSIS
+        )
+
+        kwargs = (
+            mock_sheets.spreadsheets.return_value.values.return_value.append.call_args.kwargs
+        )
+        row = kwargs["body"]["values"][0]
+        assert row[_COL_IS_OK] == int(_BAD_ANALYSIS.is_call_ok)  # 0
+
+    def test_bad_call_comment_cell_is_formatted_red(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A6:T6")
+
+        sheets_service.append_analysis_result(
+            SPREADSHEET_ID, SHEET_NAME, SHEET_ID, DATE_STR, _BAD_ANALYSIS
+        )
+
+        body = mock_sheets.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]
+        fmt = body["requests"][0]["repeatCell"]["cell"]["userEnteredFormat"]
+        assert fmt["backgroundColor"]["red"] == 1.0
+        assert fmt["backgroundColor"]["green"] == 0.0
+        assert fmt["backgroundColor"]["blue"] == 0.0
+        assert fmt["textFormat"]["bold"] is True
+
+    def test_unextracted_columns_are_empty(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        """Cols 3–4 (Філія, Менеджер) and col 15 (Яких рекомендацій) are not
+        extracted by the bot and must always be empty strings."""
+        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A2:T2")
+
+        sheets_service.append_analysis_result(
+            SPREADSHEET_ID, SHEET_NAME, SHEET_ID, DATE_STR, _OK_ANALYSIS
+        )
+
+        kwargs = (
+            mock_sheets.spreadsheets.return_value.values.return_value.append.call_args.kwargs
+        )
+        row = kwargs["body"]["values"][0]
+        for col_idx in (3, 4, 15):
+            assert row[col_idx] == "", f"Expected col {col_idx} to be empty"
 
     def test_raises_sheets_service_error_on_http_error(
         self,
@@ -517,6 +967,64 @@ class TestAppendAnalysisResult:
             sheets_service.append_analysis_result(
                 SPREADSHEET_ID, SHEET_NAME, SHEET_ID, DATE_STR, _OK_ANALYSIS
             )
+
+    def test_append_result_batchupdate_contains_borders_request(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        """append_analysis_result must issue a batchUpdate that includes borders."""
+        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A5:T5")
+
+        sheets_service.append_analysis_result(
+            SPREADSHEET_ID, SHEET_NAME, SHEET_ID, DATE_STR, _OK_ANALYSIS
+        )
+
+        body = mock_sheets.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]
+        assert len(body["requests"]) == 2
+        assert "updateBorders" in body["requests"][1]
+
+    def test_append_result_borders_span_full_row(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        """Border range in append_analysis_result must cover all 20 columns."""
+        # Row 5 in A1 notation → row_index 4 (0-based)
+        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A5:T5")
+
+        sheets_service.append_analysis_result(
+            SPREADSHEET_ID, SHEET_NAME, SHEET_ID, DATE_STR, _OK_ANALYSIS
+        )
+
+        body = mock_sheets.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]
+        border_range = body["requests"][1]["updateBorders"]["range"]
+
+        assert border_range["sheetId"] == SHEET_ID
+        assert border_range["startRowIndex"] == 4
+        assert border_range["endRowIndex"] == 5
+        assert border_range["startColumnIndex"] == 0
+        assert border_range["endColumnIndex"] == _ROW_WIDTH
+
+    def test_append_result_borders_are_solid_black(
+        self,
+        sheets_service: GoogleSheetsService,
+        mock_sheets: MagicMock,
+    ) -> None:
+        """Borders produced by append_analysis_result must be SOLID black."""
+        _configure_append_response(mock_sheets, f"{SHEET_NAME}!A5:T5")
+
+        sheets_service.append_analysis_result(
+            SPREADSHEET_ID, SHEET_NAME, SHEET_ID, DATE_STR, _OK_ANALYSIS
+        )
+
+        body = mock_sheets.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]
+        borders = body["requests"][1]["updateBorders"]
+
+        for side in ("top", "bottom", "left", "right", "innerVertical"):
+            assert borders[side] == _BLACK_BORDER, f"Border side '{side}' mismatch"
+            assert borders[side]["style"] == "SOLID"
+            assert borders[side]["color"] == _BLACK_COLOR
 
 
 # ---------------------------------------------------------------------------

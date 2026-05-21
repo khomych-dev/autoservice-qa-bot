@@ -35,7 +35,7 @@ _SAMPLE_TRANSCRIPT = (
 
 _DUMMY_ANALYSIS = CallAnalysis(
     has_recording=True,
-    work_type="Комп'ютерна діагностика",
+    work_type="Компʼютерна діагностика",
     manager_evaluation="Менеджер відповів ввічливо, надав точну ціну та час.",
     is_call_ok=True,
     red_flag_comment=None,
@@ -149,7 +149,7 @@ class TestAnalyzeTranscriptSuccess:
         result = service.analyze_transcript(_SAMPLE_TRANSCRIPT)
 
         assert result.has_recording is True
-        assert result.work_type == "Комп'ютерна діагностика"
+        assert result.work_type == "Компʼютерна діагностика"
         assert result.is_call_ok is True
         assert result.red_flag_comment is None
         assert result.score == 1
@@ -161,7 +161,7 @@ class TestAnalyzeTranscriptSuccess:
     ) -> None:
         bad_analysis = CallAnalysis(
             has_recording=True,
-            work_type="Заміна масла",
+            work_type="Заміна Оливи ДВЗ",
             manager_evaluation="Менеджер не надав ціну та грубо відповів.",
             is_call_ok=False,
             red_flag_comment="Менеджер не надав інформацію про вартість послуги.",
