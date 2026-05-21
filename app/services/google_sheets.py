@@ -22,24 +22,70 @@ _SCOPES: list[str] = [
 ]
 
 # ---------------------------------------------------------------------------
-# Analysis-row column layout (0-based)
-# Changing the order here automatically flows through format_cell_red.
+# Analysis-row column layout — matches the Sheet1 template (0-based)
+#
+# Col  Header (Ukrainian)                    Populated from
+#  0   Дата                               ← date_str
+#  1   Тип звернення                      ← call_type (from filename)
+#  2   Номер телефону                     ← phone_number (from filename)
+#  3   Філія                              (left empty — not extracted)
+#  4   Менеджер                           (left empty — not extracted)
+#  5   Початок розмови, представлення     ← analysis.greeting_start
+#  6   Чи дізнвся менеджер кузов          ← analysis.asked_car_body
+#  7   Чи дізнався менеджер рік           ← analysis.asked_car_year
+#  8   Чи дізнався менеджр пробіг         ← analysis.asked_mileage
+#  9   Пропозиція про комплексну діагн.   ← analysis.offered_diagnostics
+# 10   Дізнався які роботи робилися       ← analysis.asked_previous_works
+# 11   Запис на сервіс, Дата              ← analysis.appointment_date
+# 12   Завершення розмови прощання        ← analysis.goodbye_end
+# 13   Яка робота з топ 100               ← analysis.work_type
+# 14   Чи дотримувався всіх інструкцій    ← analysis.is_call_ok (1/0)
+# 15   Яких рекомендацій не дотримувався  (left empty — not extracted)
+# 16   Результат                          ← analysis.result
+# 17   Оцінка                             ← analysis.score
+# 18   Запчастини                         ← analysis.spare_parts
+# 19   Коментар                           ← analysis.red_flag_comment
+#                                            (always explicitly formatted)
 # ---------------------------------------------------------------------------
 
 _COL_DATE = 0
-_COL_HAS_RECORDING = 1
-_COL_WORK_TYPE = 2
-_COL_EVALUATION = 3
-_COL_IS_OK = 4
-_COL_RED_FLAG = 5   # cell that gets red background for bad calls
-_COL_SCORE = 6
+_COL_CALL_TYPE = 1
+_COL_PHONE = 2
+_COL_GREETING = 5
+_COL_CAR_BODY = 6
+_COL_CAR_YEAR = 7
+_COL_MILEAGE = 8
+_COL_DIAGNOSTICS = 9
+_COL_PREV_WORKS = 10
+_COL_APPOINTMENT = 11
+_COL_GOODBYE = 12
+_COL_WORK_TYPE = 13
+_COL_IS_OK = 14      # Чи дотримувався всіх інструкцій (1/0)
+_COL_RESULT = 16
+_COL_SCORE = 17
+_COL_SPARE_PARTS = 18
+_COL_RED_FLAG = 19   # Коментар — always receives an explicit format call
+
+_ROW_WIDTH = 20      # total named columns in the template
 
 # ---------------------------------------------------------------------------
-# Red-cell formatting constants
+# Cell-formatting colour constants
 # ---------------------------------------------------------------------------
 
+# Bad-call comment cell: red background, white bold text
 _RED_BG = {"red": 1.0, "green": 0.0, "blue": 0.0}
 _WHITE_FG = {"red": 1.0, "green": 1.0, "blue": 1.0}
+
+# Good-call comment cell: explicit white/black reset so the new row never
+# inherits red from a preceding bad-call row (Google Sheets copies the
+# preceding row's format when INSERT_ROWS is used).
+_WHITE_BG = {"red": 1.0, "green": 1.0, "blue": 1.0}
+_DEFAULT_FG = {"red": 0.0, "green": 0.0, "blue": 0.0}
+
+# Row border: solid black line applied to every side and inner-vertical
+# divider so the newly appended row matches the table's existing grid lines.
+_BLACK_COLOR = {"red": 0.0, "green": 0.0, "blue": 0.0}
+_BLACK_BORDER = {"style": "SOLID", "color": _BLACK_COLOR}
 
 
 # ---------------------------------------------------------------------------
@@ -163,17 +209,81 @@ class GoogleSheetsService:
         """Apply a red background and white bold text to a single cell.
 
         Args:
-            spreadsheet_id: Target spreadsheet.
-            sheet_id:        Numeric id of the sheet tab (``gid`` in the URL).
-            row_index:       0-based row index of the cell.
-            column_index:    0-based column index of the cell.
+            spreadsheet_id: Target spreadsheet (file ID).
+            sheet_id:        Numeric tab ID (``gid`` query param in the URL).
+            row_index:       0-based row index of the target cell.
+            column_index:    0-based column index of the target cell.
         """
+        self._apply_cell_format(
+            spreadsheet_id, sheet_id, row_index, column_index, bad=True
+        )
+
+    def format_cell_clear(
+        self,
+        spreadsheet_id: str,
+        sheet_id: int,
+        row_index: int,
+        column_index: int,
+    ) -> None:
+        """Explicitly reset a cell to white background and regular black text.
+
+        Must be called for every *good* call row so that Google Sheets does not
+        silently inherit the red background that ``INSERT_ROWS`` copies from a
+        preceding bad-call row.
+
+        Args:
+            spreadsheet_id: Target spreadsheet (file ID).
+            sheet_id:        Numeric tab ID (``gid`` query param in the URL).
+            row_index:       0-based row index of the target cell.
+            column_index:    0-based column index of the target cell.
+        """
+        self._apply_cell_format(
+            spreadsheet_id, sheet_id, row_index, column_index, bad=False
+        )
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _apply_cell_format(
+        self,
+        spreadsheet_id: str,
+        sheet_id: int,
+        row_index: int,
+        column_index: int,
+        *,
+        bad: bool,
+    ) -> None:
+        """Send a ``batchUpdate`` with two requests for the newly appended row.
+
+        Request 0 — ``repeatCell``: sets the comment cell's background/text.
+            ``bad=True``  → red background, white bold text (failed call)
+            ``bad=False`` → white background, regular black text (passed call;
+                            overrides any red inherited via ``INSERT_ROWS``)
+
+        Request 1 — ``updateBorders``: draws solid black borders on every side
+            of each cell in the full row (columns 0–_ROW_WIDTH) so the new row
+            matches the visual grid of the existing table rows.
+
+        Both requests are sent in a single ``batchUpdate`` call (one round-trip).
+        The ``requests`` list is constructed fresh every call so no state leaks
+        between rows.  ``sheetId`` (numeric tab gid) lives inside the ``range``
+        objects; ``spreadsheetId`` (file ID) is the outer kwarg — both are
+        required by the API and serve different purposes.
+        """
+        bg = _RED_BG if bad else _WHITE_BG
+        fg = _WHITE_FG if bad else _DEFAULT_FG
+        bold = bad
+        label = "red" if bad else "white"
+
         logger.info(
-            f"Formatting cell [{row_index},{column_index}] red "
+            f"Formatting cell [{row_index},{column_index}] {label} "
             f"in sheet {sheet_id} of '{spreadsheet_id}'."
         )
+
         body = {
             "requests": [
+                # ── request 0: comment-cell background / text colour ────────
                 {
                     "repeatCell": {
                         "range": {
@@ -185,31 +295,54 @@ class GoogleSheetsService:
                         },
                         "cell": {
                             "userEnteredFormat": {
-                                "backgroundColor": _RED_BG,
+                                "backgroundColor": bg,
                                 "textFormat": {
-                                    "bold": True,
-                                    "foregroundColor": _WHITE_FG,
+                                    "bold": bold,
+                                    "foregroundColor": fg,
                                 },
                             }
                         },
                         "fields": "userEnteredFormat(backgroundColor,textFormat)",
                     }
-                }
+                },
+                # ── request 1: solid black borders across the full row ──────
+                # Draws top / bottom / left / right outer borders and inner
+                # vertical cell dividers so the new row matches the grid lines
+                # of the existing table rows.
+                {
+                    "updateBorders": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "startRowIndex": row_index,
+                            "endRowIndex": row_index + 1,
+                            "startColumnIndex": 0,
+                            "endColumnIndex": _ROW_WIDTH,
+                        },
+                        "top": _BLACK_BORDER,
+                        "bottom": _BLACK_BORDER,
+                        "left": _BLACK_BORDER,
+                        "right": _BLACK_BORDER,
+                        "innerVertical": _BLACK_BORDER,
+                    }
+                },
             ]
         }
+
         try:
             self._sheets.spreadsheets().batchUpdate(
                 spreadsheetId=spreadsheet_id,
                 body=body,
             ).execute()
         except HttpError as exc:
-            logger.error(f"batchUpdate formatting failed for '{spreadsheet_id}': {exc}")
+            logger.error(
+                f"batchUpdate formatting failed for '{spreadsheet_id}': {exc}"
+            )
             raise SheetsServiceError(
-                f"Failed to apply red formatting to cell "
+                f"Failed to apply {label} formatting to cell "
                 f"[{row_index},{column_index}] in spreadsheet '{spreadsheet_id}'."
             ) from exc
 
-        logger.info("Red formatting applied.")
+        logger.info(f"{label.capitalize()} formatting applied.")
 
     def append_analysis_result(
         self,
@@ -218,26 +351,63 @@ class GoogleSheetsService:
         sheet_id: int,
         date_str: str,
         analysis: CallAnalysis,
+        call_type: str = "",
+        phone_number: str = "",
     ) -> None:
-        """Append one analysis row and immediately format the comment cell red
-        if the call was flagged as bad (``analysis.is_call_ok is False``).
+        """Append one analysis row aligned to the Sheet1 template columns,
+        then unconditionally apply explicit formatting to the Коментар cell.
 
-        Column layout:
-            A date | B has_recording | C work_type | D manager_evaluation |
-            E is_call_ok | F red_flag_comment | G score
+        The row is exactly ``_ROW_WIDTH`` (20) cells wide.  Every unfilled
+        position is an empty string ``""`` so columns never shift.
 
-        The red-flag comment cell (column F) is formatted red when
-        ``is_call_ok`` is False so reviewers can spot problems at a glance.
+        Filled columns:
+             0  Дата              ← date_str
+             1  Тип звернення     ← call_type ("Вхідний" / "Вихідний" / "")
+             2  Номер телефону    ← phone_number
+             5  Представлення     ← analysis.greeting_start
+             6  Кузов             ← analysis.asked_car_body
+             7  Рік               ← analysis.asked_car_year
+             8  Пробіг            ← analysis.asked_mileage
+             9  Діагностика       ← analysis.offered_diagnostics
+            10  Попередні роботи  ← analysis.asked_previous_works
+            11  Запис, Дата       ← analysis.appointment_date ("0" when none)
+            12  Прощання          ← analysis.goodbye_end
+            13  Яка робота        ← analysis.work_type
+            14  Чи дотримувався   ← int(analysis.is_call_ok) (1 / 0)
+            16  Результат         ← analysis.result (strict Literal enum)
+            17  Оцінка            ← analysis.score
+            18  Запчастини        ← analysis.spare_parts (strict Literal enum)
+            19  Коментар          ← analysis.red_flag_comment or ""
+
+        Formatting (always issued, never conditional):
+            bad  call (is_call_ok=False): col 19 → red background, white bold text
+            good call (is_call_ok=True):  col 19 → explicit white background,
+                regular black text — prevents inheriting the red format that
+                Google Sheets copies from the preceding row when INSERT_ROWS
+                inserts a new row above an existing red cell.
+
+        The ``startRowIndex`` / ``endRowIndex`` are derived from the
+        ``updatedRange`` the Sheets API returns in the append response, which
+        already accounts for the template's two header rows.
         """
-        row: list = [
-            date_str,
-            analysis.has_recording,
-            analysis.work_type,
-            analysis.manager_evaluation,
-            analysis.is_call_ok,
-            analysis.red_flag_comment or "",
-            analysis.score,
-        ]
+        row: list = [""] * _ROW_WIDTH
+        row[_COL_DATE] = date_str
+        row[_COL_CALL_TYPE] = call_type
+        row[_COL_PHONE] = phone_number
+        row[_COL_GREETING] = analysis.greeting_start
+        row[_COL_CAR_BODY] = analysis.asked_car_body
+        row[_COL_CAR_YEAR] = analysis.asked_car_year
+        row[_COL_MILEAGE] = analysis.asked_mileage
+        row[_COL_DIAGNOSTICS] = analysis.offered_diagnostics
+        row[_COL_PREV_WORKS] = analysis.asked_previous_works
+        row[_COL_APPOINTMENT] = analysis.appointment_date  # "0" when no appointment
+        row[_COL_GOODBYE] = analysis.goodbye_end
+        row[_COL_WORK_TYPE] = analysis.work_type
+        row[_COL_IS_OK] = int(analysis.is_call_ok)
+        row[_COL_RESULT] = analysis.result  # strict Literal enum value
+        row[_COL_SCORE] = analysis.score
+        row[_COL_SPARE_PARTS] = analysis.spare_parts  # strict Literal enum value
+        row[_COL_RED_FLAG] = analysis.red_flag_comment or ""
 
         logger.info(
             f"Appending analysis result for '{date_str}' "
@@ -265,9 +435,19 @@ class GoogleSheetsService:
                 f"Failed to append analysis result for '{date_str}'."
             ) from exc
 
-        if not analysis.is_call_ok:
-            updated_range: str = response["updates"]["updatedRange"]
-            row_index = _parse_row_index(updated_range)
+        # Always format — never skip for good calls.
+        # Skipping would leave the new row's Коментар cell red when the
+        # immediately preceding row was a bad call (INSERT_ROWS inheritance).
+        updated_range: str = response["updates"]["updatedRange"]
+        row_index = _parse_row_index(updated_range)
+        if analysis.is_call_ok:
+            self.format_cell_clear(
+                spreadsheet_id=spreadsheet_id,
+                sheet_id=sheet_id,
+                row_index=row_index,
+                column_index=_COL_RED_FLAG,
+            )
+        else:
             self.format_cell_red(
                 spreadsheet_id=spreadsheet_id,
                 sheet_id=sheet_id,

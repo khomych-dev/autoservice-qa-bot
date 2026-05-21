@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import re
 from pathlib import Path
 
 from app.core.config import settings
@@ -11,6 +12,76 @@ from app.services.google_sheets import GoogleSheetsService, SheetsServiceError
 from app.services.transcription import TranscriptionError, TranscriptionService
 
 _DATA_DIR = Path("data")
+
+# ---------------------------------------------------------------------------
+# Filename parsing
+# ---------------------------------------------------------------------------
+
+# Ukrainian phone numbers: 380XXXXXXXXX (12 digits) or 0XXXXXXXXX (10 digits)
+_PHONE_RE = re.compile(r"380\d{9}|0\d{9}")
+
+# Dates embedded in filenames — two common patterns:
+#   YYYY-MM-DD / YYYY.MM.DD / YYYY_MM_DD  (ISO-ish, e.g. "2024-11-13")
+#   DD-MM-YYYY / DD.MM.YYYY / DD_MM_YYYY  (European, e.g. "13.11.2024")
+_DATE_RE_ISO = re.compile(r"(\d{4})[.\-_](\d{2})[.\-_](\d{2})")
+_DATE_RE_EUR = re.compile(r"(\d{2})[.\-_](\d{2})[.\-_](\d{4})")
+
+_INCOMING_KEYWORDS = ("incoming", "вхід", "in_", "_in_", "(in)")
+_OUTGOING_KEYWORDS = ("outgoing", "вихід", "out_", "_out_", "(out)")
+
+
+def _parse_filename(file_name: str) -> tuple[str, str]:
+    """Return ``(call_type, phone_number)`` extracted from *file_name*.
+
+    Call-type detection (case-insensitive):
+        Incoming keywords → ``"Вхідний"``
+        Outgoing keywords → ``"Вихідний"``
+        No match          → ``""``
+
+    Phone number extraction:
+        Prefers 12-digit ``380XXXXXXXXX`` format; falls back to 10-digit
+        ``0XXXXXXXXX``; returns ``""`` if neither is found.
+    """
+    name_lower = file_name.lower()
+
+    if any(kw in name_lower for kw in _INCOMING_KEYWORDS):
+        call_type = "Вхідний"
+    elif any(kw in name_lower for kw in _OUTGOING_KEYWORDS):
+        call_type = "Вихідний"
+    else:
+        call_type = ""
+
+    phone_match = _PHONE_RE.search(file_name)
+    phone_number = phone_match.group() if phone_match else ""
+
+    return call_type, phone_number
+
+
+def _parse_call_date(file_name: str, fallback: str) -> str:
+    """Return an ISO date string (``"YYYY-MM-DD"``) for the call.
+
+    Tries to extract a date from *file_name* in two formats:
+    - ISO-ish:  ``YYYY-MM-DD``, ``YYYY.MM.DD``, ``YYYY_MM_DD``
+    - European: ``DD-MM-YYYY``, ``DD.MM.YYYY``, ``DD_MM_YYYY``
+
+    Falls back to *fallback* (typically today's date) if neither pattern
+    matches or if the extracted date is not a valid calendar date.
+    """
+    m = _DATE_RE_ISO.search(file_name)
+    if m:
+        candidate = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    else:
+        m = _DATE_RE_EUR.search(file_name)
+        if m:
+            candidate = f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
+        else:
+            return fallback
+
+    try:
+        datetime.date.fromisoformat(candidate)  # validate the date is real
+        return candidate
+    except ValueError:
+        return fallback
 
 # ---------------------------------------------------------------------------
 # Pipeline
@@ -103,6 +174,12 @@ def main() -> None:
 
         logger.info(f"{prefix} — starting")
         local_path: Path | None = None
+        call_type, phone_number = _parse_filename(file_name)
+        call_date = _parse_call_date(file_name, fallback=today)
+        logger.debug(
+            f"{prefix} — parsed call_type='{call_type}' "
+            f"phone='{phone_number}' call_date='{call_date}'"
+        )
 
         try:
             # ── a. Download ────────────────────────────────────────────
@@ -123,7 +200,7 @@ def main() -> None:
 
             # ── c. Analyse ─────────────────────────────────────────────
             logger.info(f"{prefix} — analysing transcript ...")
-            analysis = analyzer.analyze_transcript(transcript)
+            analysis = analyzer.analyze_transcript(transcript, call_date=call_date)
             logger.info(
                 f"{prefix} — analysis complete: "
                 f"work_type='{analysis.work_type}' "
@@ -149,6 +226,8 @@ def main() -> None:
                 sheet_id=settings.output_sheet_id,
                 date_str=today,
                 analysis=analysis,
+                call_type=call_type,
+                phone_number=phone_number,
             )
             logger.info(f"{prefix} — row written to spreadsheet")
 
