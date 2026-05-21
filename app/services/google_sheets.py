@@ -3,7 +3,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from google.oauth2 import service_account
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
@@ -45,6 +47,10 @@ _WHITE_FG = {"red": 1.0, "green": 1.0, "blue": 1.0}
 # ---------------------------------------------------------------------------
 
 
+class CredentialsNotFoundError(FileNotFoundError):
+    """Raised when credentials.json is absent and no cached token.json exists."""
+
+
 class SheetsServiceError(RuntimeError):
     """Wraps any ``HttpError`` raised by the Sheets or Drive API.
 
@@ -67,16 +73,17 @@ class GoogleSheetsService:
         - orchestrate all three into a single ``append_analysis_result`` call
 
     DIP note:
-        Both API clients are built once at construction time from an injectable
-        ``credentials_path``, making every public method independently testable
-        via a patched ``build`` return value.
+        Both API clients are built once at construction time from injectable
+        ``credentials_path`` and ``token_path``, making every public method
+        independently testable via a patched ``_load_oauth_credentials``.
     """
 
     def __init__(
         self,
         credentials_path: Path = Path("credentials.json"),
+        token_path: Path = Path("token.json"),
     ) -> None:
-        credentials = _load_service_account_credentials(credentials_path)
+        credentials = _load_oauth_credentials(credentials_path, token_path, _SCOPES)
         self._drive = build("drive", "v3", credentials=credentials)
         self._sheets = build("sheets", "v4", credentials=credentials)
         logger.info("GoogleSheetsService initialised.")
@@ -274,20 +281,56 @@ class GoogleSheetsService:
 # ---------------------------------------------------------------------------
 
 
-def _load_service_account_credentials(
+def _load_oauth_credentials(
     credentials_path: Path,
-) -> service_account.Credentials:
-    if not credentials_path.exists():
-        raise FileNotFoundError(
-            f"Google API credentials file not found at '{credentials_path}'. "
-            "Download the service-account JSON from the Google Cloud Console "
-            "and place it at that path."
-        )
-    logger.debug(f"Loading service-account credentials from '{credentials_path}'.")
-    return service_account.Credentials.from_service_account_file(
-        str(credentials_path),
-        scopes=_SCOPES,
-    )
+    token_path: Path,
+    scopes: list[str],
+) -> Credentials:
+    """Return valid OAuth 2.0 credentials, refreshing or re-authorising as needed.
+
+    Flow:
+        1. If ``token_path`` exists, load the cached token.
+        2. If the token is still valid, return it immediately.
+        3. If the token is expired but has a refresh token, refresh silently.
+        4. Otherwise open a browser window to run the full OAuth Desktop flow.
+        5. Persist the (new/refreshed) token back to ``token_path``.
+
+    Raises:
+        CredentialsNotFoundError: when the OAuth flow is needed but
+            ``credentials_path`` does not exist.
+    """
+    creds: Credentials | None = None
+
+    if token_path.exists():
+        creds = Credentials.from_authorized_user_file(str(token_path), scopes)
+        logger.debug(f"Loaded cached OAuth token from '{token_path}'.")
+
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            logger.info("OAuth token expired — refreshing silently ...")
+            creds.refresh(Request())
+            logger.info("Token refreshed successfully.")
+        else:
+            if not credentials_path.exists():
+                raise CredentialsNotFoundError(
+                    f"OAuth credentials file not found at '{credentials_path}'. "
+                    "Download the OAuth 2.0 Desktop App client JSON from the "
+                    "Google Cloud Console and place it at that path."
+                )
+            logger.info(
+                "No valid token found — starting OAuth flow "
+                "(a browser window will open) ..."
+            )
+            flow = InstalledAppFlow.from_client_secrets_file(
+                str(credentials_path), scopes
+            )
+            creds = flow.run_local_server(port=0)
+            logger.info("OAuth authentication complete.")
+
+        token_path.write_text(creds.to_json())
+        logger.debug(f"OAuth token saved to '{token_path}'.")
+
+    return creds
 
 
 def _parse_row_index(updated_range: str) -> int:

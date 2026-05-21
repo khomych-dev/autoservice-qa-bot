@@ -14,7 +14,7 @@ class Settings(BaseSettings):
 
     # --- Optional (override in .env when the template uses different values) ---
     output_sheet_name: str = "Sheet1"
-    output_sheet_id: int = 0
+    output_sheet_id: int = 1558940291
 
 
 settings = Settings()

@@ -2,11 +2,14 @@
 
 Strategy
 --------
+- ``_load_oauth_credentials`` is patched at the module level in the
+  ``sheets_service`` fixture, completely bypassing all auth logic for the
+  method-behaviour tests.
+- Credential-loading tests call ``_load_oauth_credentials`` directly and
+  patch only its internal dependencies at the module-level import path.
 - ``build`` is called twice in ``__init__``: once for 'drive' and once for
   'sheets'.  A ``side_effect`` function dispatches the correct MagicMock to
   each call so tests can configure the two APIs independently.
-- A real (but empty) ``credentials.json`` is written to ``tmp_path`` so that
-  ``Path.exists()`` passes without patching the stdlib.
 - ``HttpError`` instances are constructed with the real ``httplib2.Response``
   and ``content`` bytes that were confirmed by introspection.
 - ``_parse_row_index`` is tested directly as a pure function.
@@ -23,10 +26,13 @@ from googleapiclient.errors import HttpError
 
 from app.models.schemas import CallAnalysis
 from app.services.google_sheets import (
+    CredentialsNotFoundError,
     GoogleSheetsService,
     SheetsServiceError,
+    _load_oauth_credentials,
     _parse_row_index,
     _COL_RED_FLAG,
+    _SCOPES,
 )
 
 # ---------------------------------------------------------------------------
@@ -78,13 +84,6 @@ def _http_error(status: int = 403, reason: str = "Forbidden") -> HttpError:
 
 
 @pytest.fixture()
-def fake_credentials_file(tmp_path: Path) -> Path:
-    p = tmp_path / "credentials.json"
-    p.write_text('{"type": "service_account"}')
-    return p
-
-
-@pytest.fixture()
 def mock_drive() -> MagicMock:
     return MagicMock()
 
@@ -96,14 +95,13 @@ def mock_sheets() -> MagicMock:
 
 @pytest.fixture()
 def sheets_service(
-    fake_credentials_file: Path,
     mock_drive: MagicMock,
     mock_sheets: MagicMock,
     mocker: pytest_mock.MockerFixture,
 ) -> GoogleSheetsService:
-    """A fully-mocked GoogleSheetsService."""
+    """A fully-mocked GoogleSheetsService — auth is bypassed entirely."""
     mocker.patch(
-        "app.services.google_sheets.service_account.Credentials.from_service_account_file",
+        "app.services.google_sheets._load_oauth_credentials",
         return_value=MagicMock(),
     )
 
@@ -111,33 +109,59 @@ def sheets_service(
         return mock_drive if service == "drive" else mock_sheets
 
     mocker.patch("app.services.google_sheets.build", side_effect=_build_dispatcher)
-    return GoogleSheetsService(credentials_path=fake_credentials_file)
+    return GoogleSheetsService()
 
 
 # ---------------------------------------------------------------------------
-# Credentials loading
+# Credentials loading  (_load_oauth_credentials tested directly)
 # ---------------------------------------------------------------------------
 
 
 class TestCredentialsLoading:
-    def test_raises_file_not_found_when_credentials_absent(self) -> None:
-        with pytest.raises(FileNotFoundError, match="credentials.json"):
-            GoogleSheetsService(credentials_path=Path("/no/such/credentials.json"))
+    def test_raises_when_no_token_and_no_credentials_file(
+        self, tmp_path: Path
+    ) -> None:
+        with pytest.raises(CredentialsNotFoundError, match="credentials.json"):
+            _load_oauth_credentials(
+                credentials_path=tmp_path / "credentials.json",
+                token_path=tmp_path / "token.json",
+                scopes=_SCOPES,
+            )
+
+    def test_returns_valid_token_without_running_flow(
+        self, tmp_path: Path, mocker: pytest_mock.MockerFixture
+    ) -> None:
+        token_file = tmp_path / "token.json"
+        token_file.write_text("{}")
+
+        mock_creds = MagicMock()
+        mock_creds.valid = True
+        mocker.patch(
+            "app.services.google_sheets.Credentials.from_authorized_user_file",
+            return_value=mock_creds,
+        )
+
+        result = _load_oauth_credentials(
+            credentials_path=tmp_path / "credentials.json",
+            token_path=token_file,
+            scopes=_SCOPES,
+        )
+        assert result is mock_creds
 
     def test_builds_both_drive_and_sheets_clients(
         self,
-        fake_credentials_file: Path,
+        tmp_path: Path,
         mocker: pytest_mock.MockerFixture,
     ) -> None:
         mocker.patch(
-            "app.services.google_sheets.service_account.Credentials.from_service_account_file",
+            "app.services.google_sheets._load_oauth_credentials",
             return_value=MagicMock(),
         )
         mock_build = mocker.patch(
             "app.services.google_sheets.build",
             return_value=MagicMock(),
         )
-        GoogleSheetsService(credentials_path=fake_credentials_file)
+        GoogleSheetsService()
 
         service_names = [c.args[0] for c in mock_build.call_args_list]
         assert "drive" in service_names
